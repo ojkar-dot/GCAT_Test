@@ -194,13 +194,16 @@ def run_desdoble_audit(
     cs_key = cs_integrated.strip().upper()
     es_atomicos = cs_hierarchy.get(cs_key, set())
 
-    # --- EXPLORACIÓN AUTOMÁTICA DE LA COMBINACIÓN ÓPTIMA (BLOQUES INTERMEDIOS + ES) ---
-    set_elementales_post = obtener_desdoblamiento_optimo_con_historico(
+        # --- EXPLORACIÓN AUTOMÁTICA DE LA COMBINACIÓN ÓPTIMA (BLOQUES DISJUNTOS) ---
+    optimo_bloques = obtener_desdoblamiento_optimo_con_historico(
         cs_key, raw_hierarchy, full_map, df_historico_cos=None
     )
 
-    if not set_elementales_post:
-        set_elementales_post = es_atomicos  # Respaldo de seguridad atómico
+    # Si el optimizador devuelve bloques combinados, los usamos directamente para lograr el incremento de +1
+    if optimo_bloques:
+        set_elementales_post = optimo_bloques
+    else:
+        set_elementales_post = es_atomicos  # Respaldo de seguridad
 
     # Mapa inverso para reutilizar nombres de configuraciones existentes
     inverso_full_map = {frozenset(secs): cnf for cnf, secs in full_map.items()}
