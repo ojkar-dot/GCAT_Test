@@ -76,41 +76,133 @@ def get_es_for_cs(cs_name, cs_hierarchy):
     return sorted(list(cs_hierarchy.get(cs_name.strip().upper(), set())))
 
 
+def obtener_desdoblamiento_optimo_con_historico(cs_key, raw_hierarchy, full_map, df_historico_cos=None):
+    """
+    Busca la combinación óptima de bloques disjuntos (sin solape de ES) que cubran el CS objetivo,
+    desempatando según la frecuencia histórica en el .cos.
+    """
+    if cs_key not in raw_hierarchy:
+        return set()
+
+    def obtener_todos_es(nombre):
+        if nombre not in raw_hierarchy or not isinstance(raw_hierarchy[nombre], (set, list)):
+            return {nombre}
+        res = set()
+        for hijo in raw_hierarchy[nombre]:
+            if hijo in raw_hierarchy and hijo != cs_key:
+                res.update(obtener_todos_es(hijo))
+            else:
+                res.add(hijo)
+        return res
+
+    es_atomicos = obtener_todos_es(cs_key)
+    
+    # Recopilar bloques disponibles excluyendo el propio CS integrado
+    bloques_disponibles = {}
+    for nodo, hijos in raw_hierarchy.items():
+        if nodo == cs_key:
+            continue
+        es_bloque = obtener_todos_es(nodo)
+        if es_bloque.issubset(es_atomicos) and len(es_bloque) > 0:
+            bloques_disponibles[nodo] = es_bloque
+
+    for es in es_atomicos:
+        bloques_disponibles[es] = {es}
+
+    from itertools import combinations
+
+    candidatos_validos = []
+    nombres_bloques = list(bloques_disponibles.keys())
+
+    for r in range(1, len(nombres_bloques) + 1):
+        for combo in combinations(nombres_bloques, r):
+            union_es = set()
+            suma_tamanios = 0
+            for b in combo:
+                sub_es = bloques_disponibles[b]
+                union_es.update(sub_es)
+                suma_tamanios += len(sub_es)
+            
+            # RESTRICCIÓN DE PARTICIÓN DISJUNTA: Cobertura exacta y sin solapamiento de ES
+            if union_es == es_atomicos and suma_tamanios == len(es_atomicos):
+                coste = len(combo)
+                candidatos_validos.append((coste, set(combo)))
+
+    if not candidatos_validos:
+        return es_atomicos
+
+    min_coste = min(c[0] for c in candidatos_validos)
+    mejores_opciones = [c[1] for c in candidatos_validos if c[0] == min_coste]
+
+    if len(mejores_opciones) == 1:
+        return mejores_opciones[0]
+
+    # Desempate por histórico si hay múltiples opciones con el mismo coste mínimo
+    if df_historico_cos is not None and not df_historico_cos.empty:
+        mejor_opcion = mejores_opciones[0]
+        max_frecuencia = -1
+        
+        for opc in mejores_opciones:
+            frecuencia = 0
+            if "Sectores_POST" in df_historico_cos.columns:
+                frecuencia = df_historico_cos["Sectores_POST"].str.contains(list(opc)[0], na=False).sum()
+            
+            if frecuencia > max_frecuencia:
+                max_frecuencia = frecuencia
+                mejor_opcion = opc
+                
+        return mejor_opcion
+
+    return mejores_opciones[0]
+
+
 def run_desdoble_audit(
     spc_files, cos_files, cs_integrated, target_es_str, cfg_files=None
 ):
-    """Procesa los archivos .COS realizando un desdoble quirúrgico y expansivo.
-
-    Genera de forma dinámica nuevas configuraciones que reemplazan de manera
-    exacta el sector integrado por sus sectores elementales destinos,
-    manteniendo congelado al resto de sectores vecinos del ACC. Evita duplicidades
-    si la configuración ya está desdoblada o si el set de sectores resultante ya existe.
+    """Procesa los archivos .COS realizando un desdoble quirúrgico y expansivo,
+    explorando de forma recursiva el árbol de CS intermedios y ES para minimizar
+    el número de posiciones y sectores adicionales requeridos.
     """
     zip_buffer = io.BytesIO()
     fig_h, ax1 = plt.subplots(figsize=(10, 4))
     fig_m, ax2 = plt.subplots(figsize=(8, 5))
 
-    if not cos_files or not cs_integrated or not target_es_str:
+    if not cos_files or not cs_integrated:
         return (
             pd.DataFrame(),
             pd.DataFrame(),
             fig_h,
             fig_m,
             zip_buffer,
-            "Faltan parámetros obligatorios.",
+            "Faltan parámetros obligatorios (COS o CS integrado).",
         )
 
-    # 1. Mapeo del entorno operativo original
+    # 1. Mapeo del entorno operativo original y extracción jerárquica SPC con nodos 'A' y 'S'
     full_map = build_cfg_map(cfg_files)
-    targets = [
-        s.strip().upper()
-        for s in target_es_str.replace(";", ",").split(",")
-        if s.strip()
-    ]
-    set_elementales_post = set(targets)
+    
+    from parsers import parse_spc_content
+    raw_hierarchy = {}
+    if spc_files:
+        files_spc = spc_files if isinstance(spc_files, list) else [spc_files]
+        for spc_f in files_spc:
+            c_bytes = spc_f.getvalue() if hasattr(spc_f, "getvalue") else spc_f
+            parsed_spc = parse_spc_content(c_bytes)
+            raw_hierarchy.update(parsed_spc.get("raw_hierarchy", {}))
+            
+    _, cs_hierarchy = get_acc_cs_mapping(spc_files, cfg_files, cos_files)
+    
+    cs_key = cs_integrated.strip().upper()
+    es_atomicos = cs_hierarchy.get(cs_key, set())
 
-    # Creamos un mapa inverso para buscar si un conjunto de sectores ya tiene nombre asignado
-    # { frozenset(sectores): nombre_configuracion }
+    # --- EXPLORACIÓN AUTOMÁTICA DE LA COMBINACIÓN ÓPTIMA (BLOQUES INTERMEDIOS + ES) ---
+    set_elementales_post = obtener_desdoblamiento_optimo_con_historico(
+        cs_key, raw_hierarchy, full_map, df_historico_cos=None
+    )
+
+    if not set_elementales_post:
+        set_elementales_post = es_atomicos  # Respaldo de seguridad atómico
+
+    # Mapa inverso para reutilizar nombres de configuraciones existentes
     inverso_full_map = {frozenset(secs): cnf for cnf, secs in full_map.items()}
 
     all_rows, zip_files, log_verificacion = [], [], []
@@ -136,27 +228,18 @@ def run_desdoble_audit(
                 continue
 
             hora, c_pre = p[2].strip(), p[4].strip().upper()
-
-            # Verificamos si la configuración primitiva contiene el sector integrado a desdoblar
             sectores_cnf_actual = full_map.get(c_pre, set())
 
-            # Control de idempotencia: Si ya es una configuración desdoblada o no contiene el CS, no duplicamos
-            if c_pre in full_map and cs_integrated in sectores_cnf_actual and not c_pre.endswith("_DESD"):
-                # REEMPLAZO QUIRÚRGICO EXPANSIVO: Conservamos vecinos y sumamos elementales
-                vecinos_acc = sectores_cnf_actual - {cs_integrated}
+            if c_pre in full_map and cs_key in sectores_cnf_actual and not c_pre.endswith("_DESD"):
+                vecinos_acc = sectores_cnf_actual - {cs_key}
                 sectores_post_diseno = vecinos_acc | set_elementales_post
 
-                # COMPROBACIÓN DE DUPLICIDAD: ¿Existe ya una configuración con exactamente estos sectores?
                 froz_post = frozenset(sectores_post_diseno)
                 if froz_post in inverso_full_map:
-                    # Reutilizamos el nombre existente si ya está creada en el sistema
                     final_name = inverso_full_map[froz_post]
                     cambio_flag = 1
                     calidad = "ÉXITO (Existente)"
                 else:
-                    # ============================================================
-                    # NUEVA NOMENCLATURA COHERENTE (Ej: 8V -> 9V_DESD / 9VN -> 10VN_DESD)
-                    # ============================================================
                     import re
                     match = re.match(r"^(\d+)(.*)$", c_pre)
                     if match:
@@ -170,11 +253,9 @@ def run_desdoble_audit(
                     cambio_flag = 1
                     calidad = "ÉXITO"
 
-                    # Registramos en el mapa inverso dinámicamente para evitar duplicados en el mismo batch
                     inverso_full_map[froz_post] = final_name
                     full_map[final_name] = sectores_post_diseno
 
-                # Registramos las nuevas líneas para el archivo de catálogo .CFG (solo si es nueva)
                 for sec in sorted(list(sectores_post_diseno)):
                     nuevas_lineas_cfg_globales.add(
                         f"LECSCTA;{final_name};{sec}"
@@ -200,7 +281,6 @@ def run_desdoble_audit(
                 )
                 p[4] = final_name
             else:
-                # Si el tramo ya estaba desdoblado previamente o no contiene el integrado, permanece inalterado
                 s_pre_str = ", ".join(sorted(list(sectores_cnf_actual)))
                 all_rows.append(
                     {

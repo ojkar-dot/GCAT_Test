@@ -69,11 +69,7 @@ def parse_cos_content(file_bytes, filename=""):
 def parse_spc_content(file_bytes, filename=""):
     """Parseador consolidado para estructura de sectores (.SPC).
 
-    Parsea la jerarquía de Sectores Integrados (CS) a Sectores Elementales (ES).
-    Formato esperado:
-      A;LECSNCS;_;CS;7   -> Define la cabecera del CS
-      S;LECSALCU;ES      -> Define un Sector Elemental (ES) asociado al CS
-    activo
+    Parsea la jerarquía multinivel de Sectores Integrados (CS) y bloques intermedios.
     """
     text = file_bytes.decode("latin-1", errors="ignore")
     spc_map = {}
@@ -88,23 +84,38 @@ def parse_spc_content(file_bytes, filename=""):
         if not parts:
             continue
 
-        # Detección de Cabecera CS (ej: A;LECSNCS;_;CS;7)
+        # Detección de Cabecera CS o bloque intermedio (ej: A;LECBG12;...;CS;2)
         if parts[0] == "A" and len(parts) >= 2:
             current_cs = parts[1]
             if current_cs not in spc_map:
                 spc_map[current_cs] = set()
 
-        # Detección de Sector Elemental ES (ej: S;LECSALCU;ES)
-        elif parts[0] == "S" and len(parts) >= 2 and current_cs:
-            es_name = parts[1]
-            spc_map[current_cs].add(es_name)
+        # Detección de componentes asociados (pueden ser ES u otros bloques intermedios CS)
+        elif parts[0] in ["S", "A"] and len(parts) >= 2 and current_cs:
+            sub_name = parts[1]
+            spc_map[current_cs].add(sub_name)
 
-    # Convertir conjuntos a listas ordenadas
-    spc_map_sorted = {
-        cs: sorted(list(es_set)) for cs, es_set in spc_map.items()
-    }
+    # Expandir recursivamente los CS intermedios para obtener todos los ES terminales de cada CS
+    def resolver_es_recursivo(cs_name, visited=None):
+        if visited is None:
+            visited = set()
+        if cs_name in visited:
+            return set()
+        visited.add(cs_name)
+        
+        elementos = spc_map.get(cs_name, set())
+        es_finales = set()
+        for elem in elementos:
+            # Si el elemento es a su vez un CS definido en el mapa, expandimos sus componentes
+            if elem in spc_map and elem != cs_name:
+                es_finales.update(resolver_es_recursivo(elem, visited))
+            else:
+                es_finales.add(elem)
+        return es_finales
 
-    return {"filename": filename, "cs_es_map": spc_map_sorted}
+    spc_map_resolved = {cs: sorted(list(resolver_es_recursivo(cs))) for cs in spc_map.keys()}
+
+    return {"filename": filename, "cs_es_map": spc_map_resolved, "raw_hierarchy": spc_map}
 
 
 def parse_cfg_content(file_bytes, filename=""):

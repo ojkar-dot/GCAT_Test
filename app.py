@@ -38,7 +38,7 @@ def render_tab1():
     col_cos, col_spc, col_cfg = st.columns(3)
 
     with col_cos:
-        st.subheader("📄 Archivos .COS / .TXT")
+        st.subheader("📄 Archivos .COS")
         uploaded_cos = st.file_uploader(
             "Esquemas de Apertura (.COS):",
             type=["cos", "txt"],
@@ -167,9 +167,9 @@ def render_tab2():
     if "2.1" in sub_tab:
         dibujar_subtab_21_global(df_filtered, acc_sel, fecha_sel)
     elif "2.2" in sub_tab:
-        dibujar_subtab_22_colapsados(df_base, full_map, acc_sel, fecha_sel, turno_sel)
+        dibujar_subtab_22_colapsados(df_filtered, full_map, acc_sel, fecha_sel, turno_sel)
     elif "2.3" in sub_tab:
-        dibujar_subtab_23_gantt_sectores(df_base, full_map, fecha_sel)
+        dibujar_subtab_23_gantt_sectores(df_filtered, full_map, fecha_sel)
     elif "2.4" in sub_tab:
         dibujar_subtab_24_predictivo(df_filtered, full_map, fecha_sel)
 
