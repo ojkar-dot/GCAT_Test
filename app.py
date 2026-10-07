@@ -860,10 +860,10 @@ def render_tab5():
     # Bloque 1: Exploración Estructural
     with st.expander("📊 1. Diagnóstico Estructural del ACC (Pestaña 2)", expanded=True):
         st.markdown("""
-        Antes de aplicar cualquier cambio, el sistema extrae la radiografía base del espacio aéreo original mediante tres enfoques:
+        Antes de aplicar cualquier cambio, el sistema extrae la radiografía base del espacio aéreo original mediante cuatro enfoques:
         * **Perfil de Carga Cronológica (2.1):** Traza el histórico continuo del número de sectores abiertos simultáneamente. Permite auditar visualmente las rampas de apertura matinales y las mesetas de máxima capacidad diurna.
         * **Índice de Estabilidad Sectorial (2.1):** Calcula la duración media (en minutos) de las configuraciones. Un promedio bajo delata sectorizaciones inestables o 'de paso' que elevan la tasa de transferencia de tráfico de los controladores.
-        * **Dinámica Cuantitativa de Desdobles (2.2):** Mide mediante deltas vectoriales (\(\Delta = \text{Sectores}_{\text{Post}} - \text{Sectores}_{\text{Pre}}\)) la magnitud neta de expansión o contracción en cada cambio de bloque del plan de apertura.
+        * **Dinámica Cuantitativa de Desdobles (2.2):** Mide mediante deltas vectoriales ($\Delta = \text{Sectores}_{\text{Post}} - \text{Sectores}_{\text{Pre}}$) la magnitud neta de expansión o contracción en cada cambio de bloque del plan de apertura.
         * **Perfil Geométrico de Puestos (2.3):** Un Diagrama de Gantt adaptado a la navegación aérea que reproduce la ocupación exacta de las consolas de control a lo largo de las 24 horas del día.
         """)
 
@@ -872,16 +872,16 @@ def render_tab5():
         st.markdown("""
         El Asistente Predictivo interroga la base de datos agregada del histórico de planes cargados para calcular la probabilidad frecuencial de un cambio operativo:
         * **Tratamiento del Calendario:** El algoritmo traduce las fechas del plan al día de la semana correspondiente (Lunes, Martes, etc.) para aislar patrones de tráfico recurrentes.
-        * **Ventana de Influencia Temporal (\(\pm 15\) min):** Para mitigar el desfase por retrasos en las programaciones de vuelos, el motor abre un colchón estadístico alrededor de la hora consultada. Esto garantiza una muestra representativa de la franja.
+        * **Ventana de Influencia Temporal ($\pm 15$ min):** Para mitigar el desfase por retrasos en las programaciones de vuelos, el motor abre un colchón estadístico alrededor de la hora consultada. Esto garantiza una muestra representativa de la franja.
         """)
 
     # Bloque 3: Motor de Desdoblamiento Quirúrgico
-    with st.expander("⚙️ 3. Algoritmo de Desdoble Expansivo No Invasivo (Pestaña 3)"):
+    with st.expander("⚙️ 3. Algoritmo de Desdoble Expansivo No Invasivo con Partición Disjunta (Pestaña 3)"):
         st.markdown("""
-        Cuando un **Sector Integrado (CS)** se satura por exceso de demanda, el backend simula su división hacia sus **Sectores Elementales (ES)** bajo tres restricciones operativas estrictas:
-        1. **Garantía de Cobertura de Espacio Aéreo:** Utilizando el mapa de jerarquía real (`cs_hierarchy`), verifica que el volumen geográfico del sector viejo quede plenamente protegido, evitando la existencia de 'zonas vacías' o agujeros de seguridad sin control ATC.
-        2. **Cero Intrusión Operativa (Congelación del ACC):** El algoritmo congela el entorno de control original y aísla el cambio, modificando única y exclusivamente el sector saturado sin alterar las posiciones colindantes de la sala.
-        3. **Nomenclatura Coherente de Capacidad:** Toda nueva configuración dinámica añade el sufijo `_DESD` y actualiza automáticamente su prefijo numérico sumando exactamente un sector activo (`+1`) para reflejar la capacidad real en tiempo real (Ej: `8V` ➔ `9V_DESD`).
+        Cuando un **Sector Integrado (CS)** se satura por exceso de demanda, el backend simula su división óptima bajo tres restricciones operativas estrictas:
+        1. **Partición Disjunta y Cobertura Exacta:** El motor evalúa combinaciones de bloques intermedios y sectores elementales evitando solapamientos geográficos o duplicidades, asegurando una cobertura limpia y sin fisuras del volumen a desdoblar.
+        2. **Cero Intrusión Operativa (Congelación del Entorno):** El algoritmo aísla el cambio, manteniendo intactas las posiciones colindantes y sustituyendo únicamente el sector integrado por la combinación óptima de bloques intermedios o elementales resultantes.
+        3. **Nomenclatura Coherente de Capacidad (\(+1\) Salto):** Toda nueva configuración dinámica añade el sufijo `_DESD` y actualiza automáticamente su prefijo numérico reflejando un incremento controlado de exactamente un sector activo en sala (Ej: `4` ➔ `5`), evitando saltos desproporcionados.
         """)
 
     # Bloque 4: Reglas de Turnos ATC
@@ -892,7 +892,6 @@ def render_tab5():
         * **🌆 Turno de Tarde:** Franja de **15:00h a 21:59h**. Monitorea la estabilización de los flujos de crucero.
         * **🌌 Turno de Noche:** Franja de **22:00h a 06:59h**. Periodo de contracción del espacio aéreo hacia macrosectores agrupados de baja demanda.
         """)
-
 
 def main():
     st.title("✈️ ATFCM Sector & Configuration Analyzer")
