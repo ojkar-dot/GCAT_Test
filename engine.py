@@ -41,7 +41,6 @@ def build_cfg_map(cfg_files):
 
 def get_acc_cs_mapping(spc_files, cfg_files=None, cos_files=None):
     """Extrae las relaciones jerárquicas entre sectores integrados (CS) y
-
     elementales (ES) a partir de los archivos .SPC.
     """
     acc_map = {}
@@ -76,136 +75,40 @@ def get_es_for_cs(cs_name, cs_hierarchy):
     return sorted(list(cs_hierarchy.get(cs_name.strip().upper(), set())))
 
 
-def obtener_desdoblamiento_optimo_con_historico(cs_key, raw_hierarchy, full_map, df_historico_cos=None):
-    """
-    Busca la combinación óptima de bloques disjuntos (sin solape de ES) que cubran el CS objetivo,
-    desempatando según la frecuencia histórica en el .cos.
-    """
-    if cs_key not in raw_hierarchy:
-        return set()
-
-    def obtener_todos_es(nombre):
-        if nombre not in raw_hierarchy or not isinstance(raw_hierarchy[nombre], (set, list)):
-            return {nombre}
-        res = set()
-        for hijo in raw_hierarchy[nombre]:
-            if hijo in raw_hierarchy and hijo != cs_key:
-                res.update(obtener_todos_es(hijo))
-            else:
-                res.add(hijo)
-        return res
-
-    es_atomicos = obtener_todos_es(cs_key)
-    
-    # Recopilar bloques disponibles excluyendo el propio CS integrado
-    bloques_disponibles = {}
-    for nodo, hijos in raw_hierarchy.items():
-        if nodo == cs_key:
-            continue
-        es_bloque = obtener_todos_es(nodo)
-        if es_bloque.issubset(es_atomicos) and len(es_bloque) > 0:
-            bloques_disponibles[nodo] = es_bloque
-
-    for es in es_atomicos:
-        bloques_disponibles[es] = {es}
-
-    from itertools import combinations
-
-    candidatos_validos = []
-    nombres_bloques = list(bloques_disponibles.keys())
-
-    for r in range(1, len(nombres_bloques) + 1):
-        for combo in combinations(nombres_bloques, r):
-            union_es = set()
-            suma_tamanios = 0
-            for b in combo:
-                sub_es = bloques_disponibles[b]
-                union_es.update(sub_es)
-                suma_tamanios += len(sub_es)
-            
-            # RESTRICCIÓN DE PARTICIÓN DISJUNTA: Cobertura exacta y sin solapamiento de ES
-            if union_es == es_atomicos and suma_tamanios == len(es_atomicos):
-                coste = len(combo)
-                candidatos_validos.append((coste, set(combo)))
-
-    if not candidatos_validos:
-        return es_atomicos
-
-    min_coste = min(c[0] for c in candidatos_validos)
-    mejores_opciones = [c[1] for c in candidatos_validos if c[0] == min_coste]
-
-    if len(mejores_opciones) == 1:
-        return mejores_opciones[0]
-
-    # Desempate por histórico si hay múltiples opciones con el mismo coste mínimo
-    if df_historico_cos is not None and not df_historico_cos.empty:
-        mejor_opcion = mejores_opciones[0]
-        max_frecuencia = -1
-        
-        for opc in mejores_opciones:
-            frecuencia = 0
-            if "Sectores_POST" in df_historico_cos.columns:
-                frecuencia = df_historico_cos["Sectores_POST"].str.contains(list(opc)[0], na=False).sum()
-            
-            if frecuencia > max_frecuencia:
-                max_frecuencia = frecuencia
-                mejor_opcion = opc
-                
-        return mejor_opcion
-
-    return mejores_opciones[0]
-
-
 def run_desdoble_audit(
     spc_files, cos_files, cs_integrated, target_es_str, cfg_files=None
 ):
-    """Procesa los archivos .COS realizando un desdoble quirúrgico y expansivo,
-    explorando de forma recursiva el árbol de CS intermedios y ES para minimizar
-    el número de posiciones y sectores adicionales requeridos.
+    """Procesa los archivos .COS realizando un desdoblamiento quirúrgico basado
+    estrictamente en la selección literal del usuario (target_es_str),
+    respetando los bloques indicados, creando configuraciones virtuales (_CUSTOM)
+    si no existen en el catálogo y generando el .cfg de nuevas configuraciones.
     """
     zip_buffer = io.BytesIO()
     fig_h, ax1 = plt.subplots(figsize=(10, 4))
     fig_m, ax2 = plt.subplots(figsize=(8, 5))
 
-    if not cos_files or not cs_integrated:
+    if not cos_files or not cs_integrated or not target_es_str:
         return (
             pd.DataFrame(),
             pd.DataFrame(),
             fig_h,
             fig_m,
             zip_buffer,
-            "Faltan parámetros obligatorios (COS o CS integrado).",
+            "Faltan parámetros obligatorios (COS, CS integrado o sectores de destino).",
         )
 
-    # 1. Mapeo del entorno operativo original y extracción jerárquica SPC con nodos 'A' y 'S'
+    # 1. Mapeo del entorno operativo original y catálogo .CFG
     full_map = build_cfg_map(cfg_files)
-    
-    from parsers import parse_spc_content
-    raw_hierarchy = {}
-    if spc_files:
-        files_spc = spc_files if isinstance(spc_files, list) else [spc_files]
-        for spc_f in files_spc:
-            c_bytes = spc_f.getvalue() if hasattr(spc_f, "getvalue") else spc_f
-            parsed_spc = parse_spc_content(c_bytes)
-            raw_hierarchy.update(parsed_spc.get("raw_hierarchy", {}))
-            
     _, cs_hierarchy = get_acc_cs_mapping(spc_files, cfg_files, cos_files)
     
     cs_key = cs_integrated.strip().upper()
-    es_atomicos = cs_hierarchy.get(cs_key, set())
 
-        # --- EXPLORACIÓN AUTOMÁTICA DE LA COMBINACIÓN ÓPTIMA (BLOQUES DISJUNTOS) ---
-    optimo_bloques = obtener_desdoblamiento_optimo_con_historico(
-        cs_key, raw_hierarchy, full_map, df_historico_cos=None
-    )
+    # 2. Tomar de forma estricta y literal los tokens introducidos por el usuario (sin aplanar)
+    import re
+    tokens_usuario = [s.strip().upper() for s in re.split(r'[,;]+', target_es_str) if s.strip()]
+    set_post_tokens = set(tokens_usuario)
 
-    # Si el optimizador devuelve bloques combinados, los usamos directamente para lograr el incremento de +1
-    if optimo_bloques:
-        set_elementales_post = optimo_bloques
-    else:
-        set_elementales_post = es_atomicos  # Respaldo de seguridad
-
-    # Mapa inverso para reutilizar nombres de configuraciones existentes
+    # Mapa inverso para buscar si la combinación exacta ya existe en el catálogo .CFG
     inverso_full_map = {frozenset(secs): cnf for cnf, secs in full_map.items()}
 
     all_rows, zip_files, log_verificacion = [], [], []
@@ -213,7 +116,7 @@ def run_desdoble_audit(
 
     files_cos = cos_files if isinstance(cos_files, list) else [cos_files]
 
-    # 2. Bucle principal de reestructuración dinámica del plan de apertura
+    # 3. Bucle principal de reestructuración del plan de apertura
     for cos_f in files_cos:
         content_bytes = (
             cos_f.getvalue() if hasattr(cos_f, "getvalue") else cos_f
@@ -233,25 +136,28 @@ def run_desdoble_audit(
             hora, c_pre = p[2].strip(), p[4].strip().upper()
             sectores_cnf_actual = full_map.get(c_pre, set())
 
-            if c_pre in full_map and cs_key in sectores_cnf_actual and not c_pre.endswith("_DESD"):
+            # Si el tramo contiene el CS integrado, aplicamos la sustitución exacta del usuario
+            if c_pre in full_map and cs_key in sectores_cnf_actual:
                 vecinos_acc = sectores_cnf_actual - {cs_key}
-                sectores_post_diseno = vecinos_acc | set_elementales_post
+                sectores_post_diseno = vecinos_acc | set_post_tokens
 
                 froz_post = frozenset(sectores_post_diseno)
+                
+                # Comprobación en catálogo .CFG
                 if froz_post in inverso_full_map:
                     final_name = inverso_full_map[froz_post]
                     cambio_flag = 1
                     calidad = "ÉXITO (Existente)"
                 else:
-                    import re
+                    # Si no existe en el catálogo, se crea una configuración ficticia nueva (_CUSTOM)
                     match = re.match(r"^(\d+)(.*)$", c_pre)
                     if match:
                         num_original = int(match.group(1))
                         resto_nombre = match.group(2)
                         nuevo_num = num_original + 1
-                        final_name = f"{nuevo_num}{resto_nombre}_DESD"
+                        final_name = f"{nuevo_num}{resto_nombre}_CUSTOM"
                     else:
-                        final_name = f"{c_pre}_DESD"
+                        final_name = f"{c_pre}_CUSTOM"
 
                     cambio_flag = 1
                     calidad = "ÉXITO"
@@ -313,7 +219,7 @@ def run_desdoble_audit(
         else pd.DataFrame()
     )
 
-    # 3. Empaquetado ZIP de salida
+    # 4. Empaquetado ZIP incluyendo obligatoriamente el fichero .cfg con las nuevas configuraciones ficticias
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for filename, content in zip_files:
             zf.writestr(filename, content.encode("latin-1"))
@@ -323,7 +229,7 @@ def run_desdoble_audit(
 
     zip_buffer.seek(0)
 
-    # 4. Representación Gráfica
+    # 5. Gráficas de auditoría
     if not df_c.empty:
         pivot = (
             df_c.groupby(["HH", "Transicion"])
@@ -350,11 +256,6 @@ def run_desdoble_audit(
     return df, df_c, fig_h, fig_m, zip_buffer, "\n".join(log_verificacion)
 
 def extract_acc_trends(df_base, full_map):
-    """
-    Analiza la serie temporal del plan de apertura original para extraer
-    las tendencias de diseño: Primer disparador, pendientes de estrés y repliegue.
-    """
-    # Valores de control por defecto si los mapas están vacíos
     trends = {
         "trigger_hora": "N/A",
         "trigger_sector": "N/A",
@@ -363,43 +264,30 @@ def extract_acc_trends(df_base, full_map):
         "repliegue_sector": "N/A",
         "meseta_duracion_horas": 0.0
     }
-    
     if df_base.empty or not full_map:
         return trends
-        
-    # Ordenamos cronológicamente el plan diario
     df_cron = df_base.sort_values(by="Hora").copy()
-    
-    # --- 1. DETECCIÓN DEL FIRST TRIGGER Y RAMPA ---
-    hora_inicio_rampa = None
-    sectores_inicio_rampa = 0
-    hora_max_rampa = None
-    sectores_max_rampa = 0
+    hora_inicio_rampa, sectores_inicio_rampa = None, 0
+    hora_max_rampa, sectores_max_rampa = None, 0
     
     for i in range(1, len(df_cron)):
         cnf_pre = df_cron.iloc[i-1]["Configuracion"]
         cnf_act = df_cron.iloc[i]["Configuracion"]
         hora_act = df_cron.iloc[i]["Hora"]
-        
         len_pre = len(full_map.get(cnf_pre, set()))
         len_act = len(full_map.get(cnf_act, set()))
         
-        # Detectamos el primer desdoble (First Trigger)
         if len_act > len_pre and trends["trigger_hora"] == "N/A":
             abiertos = full_map.get(cnf_act, set()) - full_map.get(cnf_pre, set())
             trends["trigger_hora"] = hora_act
             trends["trigger_sector"] = ", ".join(sorted(list(abiertos))) if abiertos else "Varias Celdas"
-            
-            # Anclamos el inicio de la rampa matinal
             hora_inicio_rampa = hora_act
             sectores_inicio_rampa = len_pre
             
-        # Buscamos el pico máximo de la meseta diurna
         if len_act == max(df_cron["Sectores_Activos"]) and hora_max_rampa is None:
             hora_max_rampa = hora_act
             sectores_max_rampa = len_act
 
-    # Cálculo de la pendiente de estrés (Sectores abiertos por hora en la rampa)
     if hora_inicio_rampa and hora_max_rampa:
         try:
             h1 = int(hora_inicio_rampa[:2]) + int(hora_inicio_rampa[3:5])/60
@@ -409,10 +297,7 @@ def extract_acc_trends(df_base, full_map):
         except Exception:
             pass
 
-    # --- 2. DETECCIÓN DEL REPLIEGUE (INTEGRACIÓN DE TARDE) ---
     max_sectores = max(df_cron["Sectores_Activos"])
-    
-    # Calculamos cuánto dura la meseta de máxima capacidad
     df_meseta = df_cron[df_cron["Sectores_Activos"] == max_sectores]
     if len(df_meseta) >= 2:
         try:
@@ -422,29 +307,22 @@ def extract_acc_trends(df_base, full_map):
         except Exception:
             pass
 
-    # Buscamos la primera caída de capacidad después de las 14:00
     for i in range(1, len(df_cron)):
         hora_act = df_cron.iloc[i]["Hora"]
         if int(hora_act[:2]) >= 14:
             cnf_pre = df_cron.iloc[i-1]["Configuracion"]
             cnf_act = df_cron.iloc[i]["Configuracion"]
-            
             len_pre = len(full_map.get(cnf_pre, set()))
             len_act = len(full_map.get(cnf_act, set()))
-            
             if len_act < len_pre:
                 cerrados = full_map.get(cnf_pre, set()) - full_map.get(cnf_act, set())
                 trends["repliegue_hora"] = hora_act
                 trends["repliegue_sector"] = ", ".join(sorted(list(cerrados))) if cerrados else "Varias Celdas"
                 break
-                
     return trends
 
+
 def predict_atc_behavior(df_base, full_map, hora_consulta="13:44", fecha_referencia=None):
-    """
-    Escanea el histórico de datos para calcular la probabilidad estadística de 
-    desdoblamiento o integración de un día de la semana y hora específicos.
-    """
     resultado = {
         "dia_semana": "Martes",
         "total_muestras": 0,
@@ -454,26 +332,19 @@ def predict_atc_behavior(df_base, full_map, hora_consulta="13:44", fecha_referen
         "tendencia_principal": "Estable",
         "sector_objetivo": "Ninguno (Espacio Estable)"
     }
-    
     if df_base.empty or not full_map:
         return resultado
 
     df_pred = df_base.copy()
-    
-    # 1. Convertir la columna Fecha a datetime de forma segura para extraer el día de la semana
     try:
         df_pred["Fecha_dt"] = pd.to_datetime(df_pred["Fecha"], format="%d/%m/%Y", errors='coerce')
-        # Si el formato falla, intentamos detección automática
         if df_pred["Fecha_dt"].isna().all():
             df_pred["Fecha_dt"] = pd.to_datetime(df_pred["Fecha"], errors='coerce')
-            
-        # Diccionario para traducir al español los días de la semana
         dias_es = {0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo"}
         df_pred["Dia_Semana_Texto"] = df_pred["Fecha_dt"].dt.dayofweek.map(dias_es)
     except Exception:
-        df_pred["Dia_Semana_Texto"] = "Martes" # Fallback operativo
+        df_pred["Dia_Semana_Texto"] = "Martes"
 
-    # Determinar qué día de la semana consultar (basado en la fecha seleccionada por el usuario)
     if fecha_referencia:
         try:
             fecha_ref_dt = pd.to_datetime(fecha_referencia, format="%d/%m/%Y", errors='coerce')
@@ -482,22 +353,18 @@ def predict_atc_behavior(df_base, full_map, hora_consulta="13:44", fecha_referen
         except Exception:
             pass
 
-    # Filtrar el histórico para quedarnos solo con el mismo día de la semana (ej: todos los Martes del mes)
     df_dia_semana = df_pred[df_pred["Dia_Semana_Texto"] == resultado["dia_semana"]].copy()
     if df_dia_semana.empty:
-        df_dia_semana = df_pred.copy() # Fallback si hay pocos datos
+        df_dia_semana = df_pred.copy()
 
-    # 2. Abrir ventana de influencia temporal de +-15 minutos alrededor de la hora de consulta
     try:
         minutos_consulta = int(hora_consulta[:2]) * 60 + int(hora_consulta[3:5])
-        
         def en_ventana_tiempo(h_str):
             try:
                 m = int(str(h_str)[:2]) * 60 + int(str(h_str)[3:5])
                 return abs(m - minutos_consulta) <= 15
             except:
                 return False
-                
         df_ventana = df_dia_semana[df_dia_semana["Hora"].apply(en_ventana_tiempo)].copy()
     except Exception:
         df_ventana = pd.DataFrame()
@@ -505,11 +372,9 @@ def predict_atc_behavior(df_base, full_map, hora_consulta="13:44", fecha_referen
     if df_ventana.empty:
         return resultado
 
-    # 3. Calcular transiciones y deltas cuantitativos del histórico en esa ventana
     df_ventana = df_ventana.sort_values(by=["Archivo", "Fecha", "Hora"])
     df_ventana["Sectores_Actuales"] = df_ventana["Configuracion"].apply(lambda c: len(full_map.get(c, set())))
     df_ventana["Sectores_Previos"] = df_ventana.groupby(["Archivo", "Fecha"])["Sectores_Actuales"].shift(1)
-    
     df_ventana = df_ventana.dropna(subset=["Sectores_Previos"])
     df_ventana["Delta"] = df_ventana["Sectores_Actuales"] - df_ventana["Sectores_Previos"]
 
@@ -518,41 +383,31 @@ def predict_atc_behavior(df_base, full_map, hora_consulta="13:44", fecha_referen
         return resultado
 
     resultado["total_muestras"] = total_casos
-    
-    # Contamos frecuencias absolutas
     desdobles = (df_ventana["Delta"] > 0).sum()
     fusiones = (df_ventana["Delta"] < 0).sum()
     estables = (df_ventana["Delta"] == 0).sum()
 
-    # Convertimos a porcentajes probabilísticos probables
     resultado["prob_desdoble"] = int(round((desdobles / total_casos) * 100))
     resultado["prob_fusion"] = int(round((fusiones / total_casos) * 100))
     resultado["prob_estable"] = int(round((estables / total_casos) * 100))
 
-    # 4. Determinar la tendencia líder y aislar el sector integrado/configuración objetivo
-    # Reemplaza esas tres líneas finales de asignación por estas versiones indexadas:
     if desdobles > fusiones and desdobles > estables:
         resultado["tendencia_principal"] = "🟢 DESDOBLAMIENTO (Apertura por Tráfico)"
         top_cnf = df_ventana[df_ventana["Delta"] > 0]["Configuracion"].value_counts()
-        resultado["sector_objetivo"] = top_cnf.index[0] if not top_cnf.empty else "N/A" # <-- AÑADE EL [0]
-        
+        resultado["sector_objetivo"] = top_cnf.index[0] if not top_cnf.empty else "N/A"
     elif fusiones > desdobles and fusiones > estables:
         resultado["tendencia_principal"] = "🔴 INTEGRACIÓN (Fusión/Collapse)"
         top_cnf = df_ventana[df_ventana["Delta"] < 0]["Configuracion"].value_counts()
-        resultado["sector_objetivo"] = top_cnf.index[0] if not top_cnf.empty else "N/A" # <-- AÑADE EL [0]
-        
+        resultado["sector_objetivo"] = top_cnf.index[0] if not top_cnf.empty else "N/A"
     else:
         resultado["tendencia_principal"] = "⚪ ESTABLE (Mantenimiento de Capacidad)"
         top_cnf = df_ventana[df_ventana["Delta"] == 0]["Configuracion"].value_counts()
-        resultado["sector_objetivo"] = top_cnf.index[0] if not top_cnf.empty else "N/A" # <-- AÑADE EL [0]
+        resultado["sector_objetivo"] = top_cnf.index[0] if not top_cnf.empty else "N/A"
 
     return resultado
 
+
 def calcular_metricas_estabilidad(df_base):
-    """
-    Calcula el Índice de Estabilidad Sectorial (IES) y detecta transiciones
-    críticas que duran menos de 40 minutos en la sala de control.
-    """
     resultado = {
         "duracion_media_minutos": 0.0,
         "total_cambios": 0,
@@ -560,14 +415,10 @@ def calcular_metricas_estabilidad(df_base):
         "porcentaje_inestabilidad": 0.0,
         "lista_alertas": []
     }
-    
     if df_base.empty:
         return resultado
         
-    # Ordenamos cronológicamente el plan del día
     df_cron = df_base.sort_values(by="Hora").copy()
-    
-    # Función auxiliar para convertir HH:MM a minutos netos del día
     def c_min(h_str):
         try:
             return int(str(h_str)[:2]) * 60 + int(str(h_str)[3:5])
@@ -575,18 +426,15 @@ def calcular_metricas_estabilidad(df_base):
             return 0
 
     duraciones = []
-    
     for i in range(len(df_cron)):
         fila = df_cron.iloc[i]
         h_ini = c_min(fila["Hora"])
-        
-        # Si el archivo .COS incluye 'Hora_Fin' la usamos; si no, el inicio de la siguiente fila
         if "Hora_Fin" in df_cron.columns and pd.notna(fila["Hora_Fin"]):
             h_fin = c_min(fila["Hora_Fin"])
         elif i < len(df_cron) - 1:
             h_fin = c_min(df_cron.iloc[i+1]["Hora"])
         else:
-            h_fin = 1440 # Cierre del día a las 24:00 (1440 minutos)
+            h_fin = 1440
             
         duracion_tramo = h_fin - h_ini
         if duracion_tramo > 0:
@@ -595,30 +443,22 @@ def calcular_metricas_estabilidad(df_base):
     if not duraciones:
         return resultado
 
-    # Filtrar tramos donde realmente cambia la configuración respecto a la anterior
     cambios_reales = []
     ultima_cnf = None
-    
     for hora, cnf, dur in duraciones:
         if cnf != ultima_cnf:
             if ultima_cnf is not None:
-                # El tramo anterior terminó cuando empezó este. Registramos su duración acumulada.
                 cambios_reales.append((hora_acum, cnf_acum, dur_acum))
             hora_acum, cnf_acum, dur_acum = hora, cnf, dur
             ultima_cnf = cnf
         else:
-            dur_acum += dur # Si es la misma configuración consecutiva, sumamos el tiempo
+            dur_acum += dur
             
-    # Añadimos el último bloque del día
     cambios_reales.append((hora_acum, cnf_acum, dur_acum))
-
-    # Cálculos estadísticos netos
-    total_cambios = len(cambios_reales) - 1 # El primer tramo es el inicio, no un cambio
+    total_cambios = len(cambios_reales) - 1
     lista_duraciones = [d for _, _, d in cambios_reales]
-    
     duracion_media = np.mean(lista_duraciones) if lista_duraciones else 0.0
     
-    # Detectar violaciones al umbral regulatorio de 40 minutos
     criticos = 0
     alertas = []
     for h, cnf, d in cambios_reales:
